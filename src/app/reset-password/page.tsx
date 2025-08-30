@@ -35,7 +35,7 @@ export default function ResetPasswordPage() {
   const supabase = supabaseBrowser();
   const router = useRouter();
 
-  const [exchangeDone, setExchangeDone] = useState(false);
+  const [ready, setReady] = useState(false);            // ¿tenemos sesión de recuperación lista?
   const [exchangeError, setExchangeError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
@@ -46,42 +46,57 @@ export default function ResetPasswordPage() {
     reset,
   } = useForm<FormData>({ resolver: zodResolver(schema) });
 
-  // Al llegar desde el correo, intercambiamos el "code" por una sesión temporal
+  // Garantiza sesión de recuperación antes de permitir cambiar la contraseña
   useEffect(() => {
     let mounted = true;
-    (async () => {
+
+    async function ensureRecoverySession() {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) {
-          const currentUrl = new URL(window.location.href);
-          const code = currentUrl.searchParams.get("code");
-
-          // Algunas versiones de supabase-js exponen exchangeCodeForSession; otras no.
-          const authEx = supabase.auth as unknown as {
-            exchangeCodeForSession?: (value: string) => Promise<void>;
-          };
-
-          if (authEx.exchangeCodeForSession) {
-            if (code) {
-              await authEx.exchangeCodeForSession(code);
-            } else {
-              // Fallback: hay providers que ponen los tokens en la URL completa
-              await authEx.exchangeCodeForSession(window.location.href);
-            }
-          }
+        // ¿ya hay sesión?
+        const sess = await supabase.auth.getSession();
+        if (sess.data.session) {
+          if (mounted) setReady(true);
+          return;
         }
-        if (!mounted) return;
-        setExchangeDone(true);
-      } catch (err: unknown) {
-        if (!mounted) return;
-        const message =
-          err instanceof Error
-            ? err.message
-            : "No se pudo validar el enlace de recuperación.";
-        setExchangeError(message);
-        setExchangeDone(true);
+
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get("code");
+        const token = url.searchParams.get("token");
+        const typeParam = url.searchParams.get("type");
+
+        // 1) Ruta moderna: ?code=...
+        const auth1 = supabase.auth as unknown as {
+          exchangeCodeForSession?: (value: string) => Promise<void>;
+        };
+        if (code && auth1.exchangeCodeForSession) {
+          await auth1.exchangeCodeForSession(code);
+          if (mounted) setReady(true);
+          return;
+        }
+
+        // 2) Ruta clásica: ?type=recovery&token=...
+        if (token && (typeParam === "recovery" || !typeParam)) {
+          const auth2 = supabase.auth as unknown as {
+            verifyOtp: (args: { token_hash: string; type: "recovery" }) => Promise<{ data: unknown; error: Error | null }>;
+          };
+          const { error } = await auth2.verifyOtp({ token_hash: token, type: "recovery" });
+          if (error) throw error;
+          if (mounted) setReady(true);
+          return;
+        }
+
+        // Si llegamos aquí, no venía ningún parámetro útil
+        throw new Error("Enlace inválido o incompleto. Solicita otro desde 'Recuperar contraseña'.");
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "No se pudo validar el enlace de recuperación.";
+        if (mounted) {
+          setExchangeError(msg);
+          setReady(false);
+        }
       }
-    })();
+    }
+
+    ensureRecoverySession();
     return () => {
       mounted = false;
     };
@@ -89,32 +104,43 @@ export default function ResetPasswordPage() {
 
   const onSubmit = async (values: FormData) => {
     setOkMsg(null);
+
+    // Seguridad extra: confirma que sí hay sesión antes de actualizar
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      setExchangeError("La sesión de recuperación no está activa. Vuelve a abrir el enlace del correo.");
+      return;
+    }
+
     const { error } = await supabase.auth.updateUser({ password: values.new_password });
     if (error) {
-      return alert(error.message);
+      alert(error.message);
+      return;
     }
+
     setOkMsg("Contraseña actualizada correctamente.");
     reset({ new_password: "", confirm_password: "" });
-    setTimeout(() => router.push("/login"), 800);
+
+    // Limpieza opcional: cerrar sesión temporal y mandar al login
+    setTimeout(async () => {
+      await supabase.auth.signOut();
+      router.push("/login");
+    }, 800);
   };
 
   return (
     <AppLayout title="Restablecer contraseña" navItems={[]}>
       <Box sx={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
         <Card variant="outlined" sx={{ width: "100%", maxWidth: 480 }}>
-          <CardHeader
-            title="Restablecer contraseña"
-            subheader="Define tu nueva contraseña"
-          />
+          <CardHeader title="Restablecer contraseña" subheader="Define tu nueva contraseña" />
           <CardContent>
-            {!exchangeDone ? (
+            {!ready && !exchangeError ? (
               <Alert severity="info">Validando enlace…</Alert>
             ) : exchangeError ? (
               <Stack spacing={2}>
                 <Alert severity="error">{exchangeError}</Alert>
                 <Typography variant="body2" color="text.secondary">
-                  Intenta solicitar un nuevo enlace desde{" "}
-                  <a href="/forgot-password">Recuperar contraseña</a>.
+                  Solicita un nuevo enlace desde <a href="/forgot-password">Recuperar contraseña</a>.
                 </Typography>
               </Stack>
             ) : (
