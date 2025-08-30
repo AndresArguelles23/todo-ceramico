@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Header from "./Header";
-import Sidebar, { DRAWER_WIDTH } from "./Sidebar";
+import Sidebar from "./Sidebar";
 import Footer from "./Footer";
 import { Box, CssBaseline, ThemeProvider, createTheme, Toolbar } from "@mui/material";
 import HomeIcon from "@mui/icons-material/Home";
@@ -79,7 +79,6 @@ export default function AppLayout({
             minWidth: 0,
             display: "flex",
             flexDirection: "column",
-            pl: { md: `${DRAWER_WIDTH}px` }, // ← usamos el ancho del sidebar en desktop
           }}
         >
           {/* Compensa la altura del AppBar fijo */}
